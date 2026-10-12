@@ -1,0 +1,106 @@
+name: Turtle - Sync official xLights
+
+on:
+  schedule:
+    - cron: '23 11 * * *'
+  push:
+    branches: [master]
+    paths:
+      - '.github/workflows/turtle-sync-upstream.yml'
+      - '.github/turtle-sync/**'
+  workflow_dispatch:
+    inputs:
+      build_even_if_current:
+        description: Build turtle-dev even if official master has no new commits
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: turtle-sync-official
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'ravenridgelights-turtle/xLights'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      ready: ${{ steps.merge.outputs.ready }}
+      changed: ${{ steps.merge.outputs.changed }}
+      base_sha: ${{ steps.merge.outputs.base_sha }}
+      candidate_sha: ${{ steps.merge.outputs.candidate_sha }}
+      candidate_branch: ${{ steps.merge.outputs.candidate_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.TURTLE_SYNC_TOKEN || github.token }}
+      - name: Prepare official update without changing turtle-dev
+        id: merge
+        env:
+          TURTLE_FORCE_BUILD: ${{ github.event_name == 'push' || inputs.build_even_if_current }}
+        run: bash .github/turtle-sync/prepare.sh
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.ready == 'true'
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          submodules: recursive
+      - name: Set up the Visual Studio x64 compiler
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install ISPC
+        uses: ispc/install-ispc-action@main
+        with:
+          version: 1.31.0
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: false
+          cache: true
+      - name: Compile the exact merged candidate
+        shell: pwsh
+        working-directory: xLights
+        run: |
+          msbuild /restore /m:4 xLights.sln /p:Configuration=Release /p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save the Windows development build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Turtle-xLights-Windows-${{ github.run_id }}
+          path: 'xLights/x64/Release/**'
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.changed == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.TURTLE_SYNC_TOKEN || github.token }}
+      - name: Update only your personal development branch
+        env:
+          TURTLE_BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          TURTLE_CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          TURTLE_CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+        run: bash .github/turtle-sync/publish.sh
