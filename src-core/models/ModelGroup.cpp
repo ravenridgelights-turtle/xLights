@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "ModelGroup.h"
@@ -620,9 +622,27 @@ void ModelGroup::SetBaseModels(const std::vector<std::string>& baseModels)
     m_baseModels = baseModels;
 }
 
+bool ModelGroup::MemberWouldCreateLoop(const std::string& name)
+{
+    Model* m = modelManager.GetModel(name);
+    if (m == nullptr || m->GetDisplayAs() != DisplayAsType::ModelGroup) {
+        return false;
+    }
+    return m == this || static_cast<ModelGroup*>(m)->ContainsModelGroup(this);
+}
+
 void ModelGroup::SetModels(const std::vector<std::string>& models)
 {
-    modelNames = models;
+    // Groups that contain each other make every walk over the members recurse
+    // forever, so a member that would close a loop is never accepted.
+    modelNames.clear();
+    for (const auto& m : models) {
+        if (MemberWouldCreateLoop(m)) {
+            spdlog::warn("Model group '{}': not adding '{}' as it already contains '{}'.", GetName(), m, GetName());
+            continue;
+        }
+        modelNames.push_back(m);
+    }
     ResetModels();
 }
 
@@ -800,12 +820,14 @@ bool ModelGroup::RebuildBuffers() {
         if( GetCentreDefined()) {
             float cx = GetCentreX();
             float cy = GetCentreY();
-            if (xmaxx == xminx) {
+            // A near-zero span (e.g. a row of models at y 162.594589 vs 162.594604)
+            // would divide into a multi-billion offset and a giant buffer.
+            if (std::abs(xmaxx - xminx) < 1.0f) {
                 offsetX = 0;
             } else {
                 offsetX = ((cx - ((xminx + xmaxx) / 2.0)) * 2000.0) / (xmaxx - xminx);
             }
-            if (xmaxy == xminy) {
+            if (std::abs(xmaxy - xminy) < 1.0f) {
                 offsetY = 0;
             } else {
                 offsetY = ((cy - ((xminy + xmaxy) / 2.0)) * 2000.0) / (xmaxy - xminy);
@@ -851,19 +873,22 @@ void ModelGroup::EnsureModelsCurrent() const
         // Every crash this guards against has been on the main thread.
         return;
     }
-    if (resolvingModels) {
-        // ResetModels recurses into nested groups, and two groups can name each
-        // other. Re-entering here would clear the vector an outer frame is
-        // still walking.
-        return;
-    }
-    resolvingModels = true;
     const_cast<ModelGroup*>(this)->ResetModels();
-    resolvingModels = false;
 }
 
 void ModelGroup::ResetModels()
 {
+    if (resolvingModels) {
+        // ResetModels recurses into nested groups, and two groups can name each
+        // other. Re-entering here would clear the vector an outer frame is
+        // still walking, and an A->B->A cycle would recurse until the stack overflows.
+        return;
+    }
+    resolvingModels = true;
+    struct ClearResolving {
+        bool& flag;
+        ~ClearResolving() { flag = false; }
+    } clearResolving{ resolvingModels };
     CacheWriteLock _cacheWrite(cacheLock, cacheWriter, HoldsCacheWrite());
     modelsGeneration = modelManager.GetModelGeneration();
     models.clear();
@@ -928,7 +953,11 @@ unsigned int ModelGroup::GetLastChannel() const
 
 void ModelGroup::AddModel(const std::string &name) {
     std::string trimmedName = Trim(name);
-    
+    if (MemberWouldCreateLoop(trimmedName)) {
+        spdlog::warn("Model group '{}': not adding '{}' as it already contains '{}'.", GetName(), trimmedName, GetName());
+        return;
+    }
+
     // Add to modelNames if not already present
     if (std::find(modelNames.begin(), modelNames.end(), trimmedName) == modelNames.end()) {
         modelNames.push_back(trimmedName);
@@ -1072,6 +1101,23 @@ bool ModelGroup::CheckForChanges() const {
     return false;
 }
 
+// A scaled stack of many models, one of them very wide/tall, multiplies out to
+// billions of pixels (5.7GB seen in the wild). Nodes are rescaled into whatever
+// size we return, so shrinking it keeps the layout consistent.
+static void LimitScaledStackSize(int& wi, int& ht, int numModels, bool horizontal)
+{
+    constexpr int64_t MAX_SCALED_STACK_PIXELS = 16 * 1024 * 1024;
+    int64_t pixels = (int64_t)wi * (int64_t)ht;
+    if (pixels <= MAX_SCALED_STACK_PIXELS) {
+        return;
+    }
+    double s = std::sqrt((double)MAX_SCALED_STACK_PIXELS / (double)pixels);
+    int minWi = horizontal ? std::max(1, numModels) : 1;
+    int minHt = horizontal ? 1 : std::max(1, numModels);
+    wi = std::max(minWi, (int)(wi * s));
+    ht = std::max(minHt, (int)(ht * s));
+}
+
 void ModelGroup::GetBufferSize(const std::string &tp, const std::string &camera, const std::string &transform, int &BufferWi, int &BufferHt, int stagger) const {
     CheckForChanges();
     CacheReadLock _cacheRead(cacheLock, HoldsCacheWrite());
@@ -1144,9 +1190,11 @@ void ModelGroup::GetBufferSize(const std::string &tp, const std::string &camera,
     } else if (type == HORIZ_SCALED) {
         BufferHt = maxHi;
         BufferWi = maxWid * models;
+        LimitScaledStackSize(BufferWi, BufferHt, (int)modelNames.size(), true);
     } else if (type == VERT_SCALED) {
         BufferHt = maxHi * models;
         BufferWi = maxWid;
+        LimitScaledStackSize(BufferWi, BufferHt, (int)modelNames.size(), false);
     } else if (type == SINGLELINE_AS_PIXEL) {
         BufferHt = 1;
         BufferWi = models;
