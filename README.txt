@@ -12,6 +12,27 @@ XLIGHTS/NUTCRACKER RELEASE NOTES
 ---------------------------------
 2026.19  October ??, 2026
 
+    -bug (derwin12)              Circle models with an Inner starting location and different layer sizes put the
+                                 outer layer's nodes on the inner ring
+    -enh (derwin12)              Windows - Stem separation adds Guitar and Piano stems (downloads the 6-stem model
+                                 the first time either is picked)
+    -bug (derwin12)              Fix a batch of crashes from the 2026.18 crash reports: FPP Connect with an invalid JSON
+                                 reply, Falcon V4/V5 controllers whose status query times out, controller discovery
+                                 when FPP and DDP both answer from one IP, HinksPix export of a damaged FSEQ, Fire effect
+                                 with an overflowing buffer size, loading a corrupt FSEQ, Check Sequence with effects on
+                                 models missing from the layout, dragging an effect after the timing rows changed,
+                                 playback/scrub after the previewed model was removed, the 3D layout after switching
+                                 show folders, the Video effect preview, and the New Sequence wizard
+    -bug (derwin12)              Crash importing effects from a zip, or opening a sequence, whose file names use old
+                                 Windows/DOS accented characters
+    -bug (derwin12)              Videos whose hardware decode already failed now decode in software for the rest of the
+                                 session instead of retrying the GPU decoder for every model
+    -bug (derwin12)              Crash when the render cache folder or its files are damaged
+    -bug (derwin12)              Multi-string Cube models showed every node on string 2 in the wiring view and
+                                 controller port highlighting #7248
+    -bug (derwin12)              Model Sets can no longer mix base show folder models with the show's own models (the base
+                                 folder moved its models without the rest of the Set); existing mixed Sets are held in place
+    -bug (derwin12)              Multi-layer arches from pre-2026 layouts lost their Zig-Zag Layers setting when opened
     -bug (derwin12)              Some shaders (e.g. Neon_Futures) rendered as random noise since 2026.13 because
                                  variables declared outside functions without a starting value were not zeroed
     -enh (derwin12)              Tools > Generate Moving Head Effects adds white moving head effects (section sweeps, chorus
